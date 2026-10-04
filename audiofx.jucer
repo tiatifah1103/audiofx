@@ -3,8 +3,35 @@
 <JUCERPROJECT id="P5fyiK" name="audiofx" projectType="guiapp" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
   <MAINGROUP id="csqFBf" name="audiofx">
+    <GROUP id="{4EC9B1EC-9C12-6E8B-933D-E2FE6C1A806F}" name="Assets">
+      <GROUP id="{5DFFC77A-0B7E-8B1A-5693-2FEA8B7971ED}" name="playlist">
+        <FILE id="ok5xlA" name="The Selecter - Celebrate the Bullet (Official Music Video) [HD].mp3"
+              compile="0" resource="1" file="Assets/The Selecter - Celebrate the Bullet (Official Music Video) [HD].mp3"/>
+        <FILE id="iGRRRT" name="Ghetto Heaven (Soul II Soul Remix).mp3" compile="0"
+              resource="1" file="Assets/Ghetto Heaven (Soul II Soul Remix).mp3"/>
+        <FILE id="sjxV8R" name="Blue Lines (2012 Mix-Master).mp3" compile="0"
+              resource="1" file="Assets/Blue Lines (2012 Mix-Master).mp3"/>
+        <FILE id="Rt10Bd" name="11_59_The_Ticket.mp3" compile="0" resource="1"
+              file="Assets/11_59_The_Ticket.mp3"/>
+        <FILE id="O4EAFp" name="_TheSelecter_TheSelecter.mp3" compile="0" resource="1"
+              file="Assets/playlist/_TheSelecter_TheSelecter.mp3"/>
+        <FILE id="JjyUTg" name="Blue Lines (2012 Mix-Master).mp3" compile="0"
+              resource="1" file="Assets/playlist/Blue Lines (2012 Mix-Master).mp3"/>
+        <FILE id="gS2XyH" name="Ghetto Heaven (Soul II Soul Remix).mp3" compile="0"
+              resource="1" file="Assets/playlist/Ghetto Heaven (Soul II Soul Remix).mp3"/>
+        <FILE id="lgEDVX" name="Smiley Culture - Police Officer 12''.mp3" compile="0"
+              resource="1" file="Assets/playlist/Smiley Culture - Police Officer 12''.mp3"/>
+        <FILE id="pbBhQ4" name="The Selecter - Celebrate the Bullet.mp3" compile="0"
+              resource="1" file="Assets/playlist/The Selecter - Celebrate the Bullet.mp3"/>
+        <FILE id="GkiHLo" name="Tippa irie- Complain Neighbour.mp3" compile="0"
+              resource="1" file="Assets/playlist/Tippa irie- Complain Neighbour.mp3"/>
+      </GROUP>
+      <FILE id="OveWKS" name="playlist.json" compile="0" resource="1" file="Assets/playlist.json"/>
+    </GROUP>
     <GROUP id="{90753F6E-1FA2-558F-5D27-3294456C0572}" name="Source">
       <FILE id="ddxpFP" name="ReverbEffect.h" compile="0" resource="0" file="Source/ReverbEffect.h"/>
+      <FILE id="KQRtAI" name="DubSiren.h" compile="0" resource="0" file="Source/DubSiren.h"/>
+      <FILE id="yEcnMC" name="DubSiren.cpp" compile="1" resource="0" file="Source/DubSiren.cpp"/>
       <FILE id="tp3vHp" name="ReverbEffect.cpp" compile="1" resource="0"
             file="Source/ReverbEffect.cpp"/>
       <FILE id="NEnQcb" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
@@ -27,6 +54,8 @@
     <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors_headless" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
     <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
@@ -64,6 +93,7 @@
         <MODULEPATH id="juce_opengl" path="../../../../JUCE/modules"/>
         <MODULEPATH id="juce_osc" path="../../../../JUCE/modules"/>
         <MODULEPATH id="juce_video" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors_headless" path="../../../../../JUCE/modules"/>
       </MODULEPATHS>
     </XCODE_MAC>
   </EXPORTFORMATS>

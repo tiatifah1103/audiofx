@@ -1,47 +1,33 @@
-/*
-  ==============================================================================
-
-    DelayEffect.h
-    Created: 13 Dec 2024 3:27:36pm
-    Author:  Latifah Dickson
-
-  ==============================================================================
-*/
-
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
+#include <atomic>
 
-//==============================================================================
-/*
-*/
-
-class DelayEffect  : public juce::Component
+class DelayEffect
 {
-    
-
 public:
-    DelayEffect();
-    ~DelayEffect();
+	DelayEffect() = default;
+	~DelayEffect() = default;
 
-    void prepare(double sampleRate, int samplesPerBlock); 
-    void process(const juce::AudioSourceChannelInfo& bufferToFill);
+	void prepare(double sampleRate, int samplesPerBlock);
+	void process(const juce::AudioSourceChannelInfo& bufferToFill);
 
-    void setDelayTime(int newDelayTimeMs);
-    void setFeedback(float newFeedback);
-    void setMix(float newMix);
-    
-    void resized();
-    bool isActive() const {
-        return (mix > 0.001f) || (feedback > 0.001f) || (delayTimeSamples > 44);
-    }
+	void setDelayTime(int newDelayTimeMs);
+	void setFeedback(float newFeedback);
+	void setMix(float newMix);
 
 private:
-    juce::AudioBuffer<float> delayBuffer;
-    int writePosition = 0;
-    int delayTimeSamples = 0;
-    float feedback = 0.0f;
-    float mix = 0.0f;
+	juce::AudioBuffer<float> delayBuffer;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DelayEffect)
+	int writePosition = 0;
+
+	double currentSampleRate = 44100.0;
+	double wowPhase = 0.0;
+
+	std::array<float, 2> filterState { 0.0f, 0.0f };
+
+	std::atomic<float> delayTimeMs { 320.0f };
+	std::atomic<float> feedback { 0.45f };
+	std::atomic<float> mix { 1.0f };
 };

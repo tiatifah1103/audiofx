@@ -8,85 +8,269 @@
   ==============================================================================
 */
 
-#include <JuceHeader.h>
 #include "DelayEffect.h"
+#include <cmath>
 
-//==============================================================================
-DelayEffect::DelayEffect()
+//--------------------------------------------------------------
+void DelayEffect::prepare(
+	double sampleRate,
+	int samplesPerBlock
+)
 {
-    delayBuffer.setSize(2, 44100 * 2); // Stereo, 2 seconds max delay
-    delayBuffer.clear();
+	juce::ignoreUnused(samplesPerBlock);
 
+	currentSampleRate = sampleRate;
+
+	const int maximumDelaySamples =
+		static_cast<int>(
+			currentSampleRate * 2.5
+		);
+
+	delayBuffer.setSize(
+		2,
+		maximumDelaySamples
+	);
+
+	delayBuffer.clear();
+
+	writePosition = 0;
+	wowPhase = 0.0;
+
+	filterState = {
+		0.0f,
+		0.0f
+	};
 }
 
-DelayEffect::~DelayEffect()
+//--------------------------------------------------------------
+void DelayEffect::process(
+	const juce::AudioSourceChannelInfo& bufferToFill
+)
 {
+	if (bufferToFill.buffer == nullptr)
+		return;
+
+	auto& buffer =
+		*bufferToFill.buffer;
+
+	const int numChannels =
+		std::min(
+			2,
+			buffer.getNumChannels()
+		);
+
+	const int numSamples =
+		bufferToFill.numSamples;
+
+	const int delayBufferSize =
+		delayBuffer.getNumSamples();
+
+	if (
+		delayBufferSize <= 0 ||
+		numSamples <= 0
+	)
+		return;
+
+	const float currentFeedback =
+		juce::jlimit(
+			0.0f,
+			0.92f,
+			feedback.load()
+		);
+
+	const float currentMix =
+		juce::jlimit(
+			0.0f,
+			1.0f,
+			mix.load()
+		);
+
+	const float baseDelayMs =
+		juce::jlimit(
+			50.0f,
+			2000.0f,
+			delayTimeMs.load()
+		);
+
+	// Darken every repeat like a tape echo.
+	constexpr float tapeCutoff =
+		4500.0f;
+
+	const float lowPassAmount =
+		1.0f -
+		std::exp(
+			-2.0f *
+			juce::MathConstants<float>::pi *
+			tapeCutoff /
+			static_cast<float>(
+				currentSampleRate
+			)
+		);
+
+	// Slow tape-speed modulation.
+	constexpr double wowRate =
+		0.34;
+
+	constexpr float wowDepthMs =
+		6.0f;
+
+	for (
+		int sample = 0;
+		sample < numSamples;
+		++sample
+	)
+	{
+		const float wow =
+			std::sin(
+				wowPhase
+			);
+
+		const float modulatedDelayMs =
+			baseDelayMs +
+			wow * wowDepthMs;
+
+		const int delaySamples =
+			juce::jlimit(
+				1,
+				delayBufferSize - 1,
+				static_cast<int>(
+					currentSampleRate *
+					modulatedDelayMs /
+					1000.0
+				)
+			);
+
+		int readPosition =
+			writePosition -
+			delaySamples;
+
+		while (
+			readPosition < 0
+		)
+		{
+			readPosition +=
+				delayBufferSize;
+		}
+
+		for (
+			int channel = 0;
+			channel < numChannels;
+			++channel
+		)
+		{
+			float* output =
+				buffer.getWritePointer(
+					channel,
+					bufferToFill.startSample
+				);
+
+			const float inputSample =
+				output[sample];
+
+			const float delayedSample =
+				delayBuffer.getSample(
+					channel,
+					readPosition
+				);
+
+			// Tape repeats progressively lose top end.
+			filterState[channel] +=
+				lowPassAmount *
+				(
+					delayedSample -
+					filterState[channel]
+				);
+
+			const float darkRepeat =
+				filterState[channel];
+
+			// Soft tape-style saturation in feedback path.
+			const float saturatedFeedback =
+				std::tanh(
+					darkRepeat * 1.6f
+				);
+
+			output[sample] =
+				inputSample *
+					(1.0f - currentMix)
+				+
+				darkRepeat *
+					currentMix;
+
+			delayBuffer.setSample(
+				channel,
+				writePosition,
+				inputSample +
+				saturatedFeedback *
+					currentFeedback
+			);
+		}
+
+		++writePosition;
+
+		if (
+			writePosition >=
+			delayBufferSize
+		)
+		{
+			writePosition = 0;
+		}
+
+		wowPhase +=
+			(
+				juce::MathConstants<double>::twoPi *
+				wowRate
+			)
+			/
+			currentSampleRate;
+
+		if (
+			wowPhase >=
+			juce::MathConstants<double>::twoPi
+		)
+		{
+			wowPhase -=
+				juce::MathConstants<double>::twoPi;
+		}
+	}
 }
 
-// Main audio processing function
-void DelayEffect::process(const juce::AudioSourceChannelInfo& bufferToFill)
+//--------------------------------------------------------------
+void DelayEffect::setDelayTime(
+	int newDelayTimeMs
+)
 {
-    auto numSamples = bufferToFill.numSamples;
-    auto numChannels = bufferToFill.buffer->getNumChannels();
-
-    for (int channel = 0; channel < numChannels; ++channel)
-    {
-        auto* channelData = bufferToFill.buffer->getWritePointer(channel);
-
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            // Reads input sample from audio stream
-            auto inSample = channelData[sample];
-
-            // Reads delayed sample from delay buffer
-            auto delayedSample = delayBuffer.getSample(channel, (writePosition + sample) % delayBuffer.getNumSamples());
-
-            // Mixes original signal and delayed signal
-            auto outSample = inSample + delayedSample * mix;
-
-            // Outputs mixed sample
-            channelData[sample] = outSample;
-
-            // Writes to delay buffer with feedback
-            delayBuffer.setSample(channel, (writePosition + sample) % delayBuffer.getNumSamples(), inSample + delayedSample * feedback);
-        }
-    }
-
-    // Moves the write position forward, wrapping around the buffer length
-    writePosition = (writePosition + numSamples) % delayBuffer.getNumSamples();
+	delayTimeMs.store(
+		static_cast<float>(
+			newDelayTimeMs
+		)
+	);
 }
 
-// Sets delay time in milliseconds
-void DelayEffect::setDelayTime(int newDelayTimeMs)
+//--------------------------------------------------------------
+void DelayEffect::setFeedback(
+	float newFeedback
+)
 {
-    // Converts delay time from milliseconds to samples at 44.1kHz
-    delayTimeSamples = newDelayTimeMs * 44.1;
+	feedback.store(
+		juce::jlimit(
+			0.0f,
+			0.92f,
+			newFeedback
+		)
+	);
 }
 
-// Sets feedback amount
-void DelayEffect::setFeedback(float newFeedback)
+//--------------------------------------------------------------
+void DelayEffect::setMix(
+	float newMix
+)
 {
-    feedback = newFeedback;
-}
-
-// Sets mix amount between dry and delayed signal
-void DelayEffect::setMix(float newMix)
-{
-    mix = newMix;
-}
-
-// Prepares the delay buffer before playback
-
-void DelayEffect::prepare(double sampleRate, int samplesPerBlock)
-{
-    // Initialize delay buffer with max size, for 2 seconds of delay at 44.1kHz sample rate)
-    delayBuffer.setSize(2, (int)(sampleRate * 2));  // 2 seconds of delay for stereo (2 channels)
-    delayBuffer.clear();  // Clears any existing data in the buffer
-    writePosition = 0;    // Resets the write position in the delay buffer
-}
-
-void DelayEffect::resized()
-{
-
-
+	mix.store(
+		juce::jlimit(
+			0.0f,
+			1.0f,
+			newMix
+		)
+	);
 }

@@ -1,528 +1,1624 @@
 #include "MainComponent.h"
-#include "DelayEffect.h"
-#include "ReverbEffect.h"
 
-//==============================================================================
-MainComponent::MainComponent()
-
+namespace
 {
+	constexpr int dubCrossfaderCC =
+		13;
 
-        // Initialise Audio Device Manager
-     //   deviceManager.initialise(2, 2, nullptr, true);
-    
-        // Connect the sender to the host (e.g., localhost) and port
-        if (!oscSender.connect("127.0.0.1", 9000))
-            juce::Logger::writeToLog("Failed to connect to OSC receiver!");
-        if (!oscSender.send("/build", juce::String("JUCE Build Complete!")))
-            juce::Logger::writeToLog("Failed to send OSC message!");
-        
-        setSize(800, 600);
-        formatManager.registerBasicFormats();
+	constexpr int sirenPitchCC =
+		16;
 
-        // Configures the audio device
-        setAudioChannels(1, 1); // deviceManager should be initialised before
-
-        // Load playlist
-        loadPlaylist();
-    
-    
+	constexpr int sirenTriggerNote =
+		65;
 
 
-    // Set up MIDI
-    auto midiDevices = juce::MidiInput::getDevices();
-    if (!midiDevices.isEmpty())
-    {
-        midiInput = juce::MidiInput::openDevice(0, this); //
-        if (midiInput)
-        {
-            midiInput->start();
-        }
-        else
-        {
-            juce::Logger::writeToLog("Failed to open MIDI device.");
-        }
-    }
-    else
-    {
-        juce::Logger::writeToLog("No MIDI devices found.");
-    }
+	juce::String getMidiControlName(
+		int cc
+	)
+	{
+		switch (
+			cc
+		)
+		{
+			case 8:
+				return "DELAY SEND";
 
-    // Load the first track
-    if (!playlistFiles.isEmpty())
-    {
-        formatManager.registerBasicFormats();
-//        audioTransportSource.start();
-    }
+			case 9:
+				return "DELAY TIME";
 
+			case 10:
+				return "SPLIT SCREEN + SPLIT DELAY";
+
+			case 11:
+				return "REVERB WIDTH";
+
+			case 12:
+				return "REVERB DAMPING";
+
+			case 13:
+				return "DUB CROSSFADER";
+
+			case 14:
+				return "HEADPHONE OUTPUT GAIN";
+
+			case 16:
+				return "SIREN PITCH";
+
+			case 17:
+				return "TOPS";
+
+			case 18:
+				return "REVERB WET";
+
+			case 19:
+				return "MIDS";
+
+			case 20:
+				return "REVERB ROOM SIZE";
+
+			case 21:
+				return "BASS";
+
+			case 23:
+				return "DELAY FEEDBACK";
+
+			case 24:
+				return "SECONDARY JOG";
+
+			case 25:
+				return "JOG";
+
+			default:
+				return "UNMAPPED CC";
+		}
+	}
+
+
+	juce::String getMidiNoteName(
+		int note
+	)
+	{
+		switch (
+			note
+		)
+		{
+			case 51:
+			case 60:
+				return "CHANGE TOPIC";
+
+			case 64:
+				return "VIDEO ADVANCE";
+
+			case 65:
+				return "DUB SIREN";
+
+			case 66:
+				return "SPLIT SCREEN ADVANCE";
+
+			default:
+				return "UNMAPPED NOTE";
+		}
+	}
 }
 
+//--------------------------------------------------------------
+MainComponent::MainComponent()
+{
+	formatManager.registerBasicFormats();
+
+	oscSender.connect(
+		"127.0.0.1",
+		9000
+	);
+
+	loadPlaylist();
+	initialiseMidi();
+
+	setSize(
+		600,
+		400
+	);
+
+	setAudioChannels(
+		0,
+		2
+	);
+
+	startTimerHz(
+		20
+	);
+
+	if (
+		!playlistFiles.isEmpty()
+	)
+	{
+		loadTrack(
+			0
+		);
+	}
+}
+
+//--------------------------------------------------------------
 MainComponent::~MainComponent()
 {
-    // Stops MIDI input if it was started
-    if (midiInput)
-        midiInput->stop();
+	stopTimer();
 
-    // Shuts down the audio system to free audio resources
-    shutdownAudio();
+	if (
+		midiInput != nullptr
+	)
+	{
+		midiInput->stop();
+		midiInput.reset();
+	}
+
+	transportSource.stop();
+
+	transportSource.setSource(
+		nullptr
+	);
+
+	readerSource.reset();
+
+	shutdownAudio();
 }
 
-// Assets folder path
-juce::File MainComponent::getAssetsFolder()
+//--------------------------------------------------------------
+void MainComponent::prepareToPlay(
+	int samplesPerBlockExpected,
+	double sampleRate
+)
 {
-    // Gets the working directory of the application
-    auto currentWorkingDir = juce::File::getCurrentWorkingDirectory();
+	transportSource.prepareToPlay(
+		samplesPerBlockExpected,
+		sampleRate
+	);
 
-    // Defines the path to the Assets folder manually
-    auto assetsFolder = currentWorkingDir.getChildFile("/Users/latifahdickson/Documents/UNI/of_v0.12.0_osx_release/apps/myApps/audio_fx_test/Assets");
+	delayEffect.prepare(
+		sampleRate,
+		samplesPerBlockExpected
+	);
 
-    // Checks if it exists and is a directory
-    if (!assetsFolder.exists() || !assetsFolder.isDirectory())
-    {
-        juce::Logger::writeToLog("Assets folder not found!");
-    }
-    else
-    {
-        juce::Logger::writeToLog("Assets folder found at: " + assetsFolder.getFullPathName());
-    }
+	reverbEffect.prepare(
+		sampleRate,
+		samplesPerBlockExpected
+	);
 
-    return assetsFolder;
+	frequencyBands.prepare(
+		sampleRate,
+		samplesPerBlockExpected
+	);
+
+	dubSiren.prepare(
+		sampleRate
+	);
+
+
+	// Start delay completely dry.
+	// CC8 controls how much tape echo is heard.
+	delayEffect.setMix(
+		0.0f
+	);
+
+	delayEffect.setFeedback(
+		delayFeedback
+	);
+
+	delayEffect.setDelayTime(
+		static_cast<int>(
+			delayTimeMs
+		)
+	);
+
+
+	dryBuffer.setSize(
+		2,
+		samplesPerBlockExpected
+	);
+
+	dubBuffer.setSize(
+		2,
+		samplesPerBlockExpected
+	);
+
+	sirenBuffer.setSize(
+		2,
+		samplesPerBlockExpected
+	);
 }
 
-
-void MainComponent::loadPlaylist()
+//--------------------------------------------------------------
+void MainComponent::getNextAudioBlock(
+	const juce::AudioSourceChannelInfo& bufferToFill
+)
 {
-    
-    // Get path to Assets folder and find the playlist JSON file
-        auto assetsFolder = getAssetsFolder();
-        auto jsonFile = assetsFolder.getChildFile("playlist.json");
+	if (
+		bufferToFill.buffer ==
+		nullptr
+	)
+	{
+		return;
+	}
 
-        if (!jsonFile.existsAsFile())
-        {
-            juce::Logger::writeToLog("Playlist JSON file not found!");
-            return;
-        }
 
-        juce::Logger::writeToLog("Loading playlist from: " + jsonFile.getFullPathName());
+	auto& output =
+		*bufferToFill.buffer;
 
-        // Read and parse JSON
-        juce::var jsonData;
-        juce::FileInputStream fileStream(jsonFile);
 
-        if (fileStream.openedOk())
-        {
-            auto jsonContent = fileStream.readEntireStreamAsString();
-            jsonData = juce::JSON::parse(jsonContent);
+	bufferToFill.clearActiveBufferRegion();
 
-            // Expect the top-level structure to be an array
-            if (jsonData.isArray())
-            {
-                for (auto& track : *jsonData.getArray())
-                {
-                    if (track.isObject())
-                    {
-                        auto* trackObj = track.getDynamicObject();
 
-                        //extract info from .json
-                        auto trackPath = assetsFolder.getChildFile(trackObj->getProperty("file").toString());
-                        auto trackTitle = trackObj->getProperty("title").toString();
-                        auto trackArtist = trackObj->getProperty("artist").toString();
+	// ============================================================
+	// PLAY CURRENT MUSIC
+	// ============================================================
 
-                        // if  file exists, add it to the internal playlist
-                        if (trackPath.existsAsFile())
-                        {
-                            trackNames.add(trackTitle + " by " + trackArtist);
-                            trackFiles.add(trackPath);
-                            juce::Logger::writeToLog("Track added: " + trackTitle + " by " + trackArtist
-                                                    + " (" + trackPath.getFullPathName() + ")");
-                        }
-                        else
-                        {
-                            juce::Logger::writeToLog("Track file not found: " + trackPath.getFullPathName());
-                        }
-                    }
-                }
-            }
-            else
-            {
-                juce::Logger::writeToLog("Invalid JSON format: Expected an array.");
-            }
-        }
-        else
-        {
-            juce::Logger::writeToLog("Failed to open playlist JSON file.");
-        }
-    
-    
+	transportSource.getNextAudioBlock(
+		bufferToFill
+	);
+
+
+	// ============================================================
+	// EQ / FREQUENCY BANDS
+	// ============================================================
+
+	juce::MidiBuffer emptyMidi;
+
+
+	frequencyBands.process(
+		output,
+		emptyMidi
+	);
+
+
+	const int channels =
+		std::min(
+			2,
+			output.getNumChannels()
+		);
+
+
+	const int numSamples =
+		bufferToFill.numSamples;
+
+
+	// ============================================================
+	// PREPARE PARALLEL AUDIO PATHS
+	// ============================================================
+
+	dryBuffer.clear();
+	dubBuffer.clear();
+	sirenBuffer.clear();
+
+
+	for (
+		int channel = 0;
+		channel < channels;
+		++channel
+	)
+	{
+		// --------------------------------------------------------
+		// CLEAN RECORD
+		// --------------------------------------------------------
+
+		dryBuffer.copyFrom(
+			channel,
+			0,
+			output,
+			channel,
+			bufferToFill.startSample,
+			numSamples
+		);
+
+
+		// --------------------------------------------------------
+		// DUB VERSION
+		//
+		// Starts as an identical copy.
+		// We then process this copy with echo/reverb.
+		// --------------------------------------------------------
+
+		dubBuffer.copyFrom(
+			channel,
+			0,
+			dryBuffer,
+			channel,
+			0,
+			numSamples
+		);
+	}
+
+
+	// ============================================================
+	// DUB SIREN
+	// ============================================================
+
+	dubSiren.process(
+		sirenBuffer,
+		numSamples
+	);
+
+
+	// ============================================================
+	// ADD SIREN INTO DUB PATH
+	//
+	// This means the siren also catches the tape echo/reverb.
+	// ============================================================
+
+	for (
+		int channel = 0;
+		channel < channels;
+		++channel
+	)
+	{
+		dubBuffer.addFrom(
+			channel,
+			0,
+			sirenBuffer,
+			channel,
+			0,
+			numSamples,
+			0.65f
+		);
+	}
+
+
+	// ============================================================
+	// TAPE ECHO
+	//
+	// CC8 now controls the DelayEffect wet/dry amount directly.
+	// ============================================================
+
+	juce::AudioSourceChannelInfo dubInfo(
+		&dubBuffer,
+		0,
+		numSamples
+	);
+
+
+	delayEffect.process(
+		dubInfo
+	);
+
+
+	// ============================================================
+	// REVERB
+	//
+	// CC18 controls its wet level exactly as before.
+	// Room size / damping / width remain independent controls.
+	// ============================================================
+
+	reverbEffect.process(
+		dubBuffer
+	);
+
+
+	// ============================================================
+	// CUSTOM DUB CROSSFADER
+	//
+	// 0.0 = original record
+	//
+	// 0.5 = original + dub treatment
+	//
+	// 1.0 = fully processed dub version
+	//
+	// Linear crossfade is deliberate here:
+	// because both sides are related signals, this avoids the
+	// unnecessary gain boost that equal-power mixing caused.
+	// ============================================================
+
+	const float x =
+		juce::jlimit(
+			0.0f,
+			1.0f,
+			dubCrossfader
+		);
+
+
+	const float dryGain =
+		1.0f -
+		x;
+
+
+	const float dubGain =
+		x;
+
+
+	// ============================================================
+	// REBUILD OUTPUT
+	// ============================================================
+
+	output.clear(
+		bufferToFill.startSample,
+		numSamples
+	);
+
+
+	for (
+		int channel = 0;
+		channel < channels;
+		++channel
+	)
+	{
+		// Clean record.
+
+		output.addFrom(
+			channel,
+			bufferToFill.startSample,
+			dryBuffer,
+			channel,
+			0,
+			numSamples,
+			dryGain
+		);
+
+
+		// Processed dub version.
+
+		output.addFrom(
+			channel,
+			bufferToFill.startSample,
+			dubBuffer,
+			channel,
+			0,
+			numSamples,
+			dubGain
+		);
+
+
+		// Some direct siren remains present even if the
+		// crossfader is towards the clean record.
+
+		output.addFrom(
+			channel,
+			bufferToFill.startSample,
+			sirenBuffer,
+			channel,
+			0,
+			numSamples,
+			0.35f
+		);
+	}
+
+
+	// ============================================================
+	// MASTER OUTPUT
+	// ============================================================
+
+	output.applyGain(
+		bufferToFill.startSample,
+		numSamples,
+		outputGain
+	);
+
+
+	// ============================================================
+	// SAFETY LIMIT
+	// ============================================================
+
+	for (
+		int channel = 0;
+		channel < channels;
+		++channel
+	)
+	{
+		float* samples =
+			output.getWritePointer(
+				channel,
+				bufferToFill.startSample
+			);
+
+
+		for (
+			int sample = 0;
+			sample < numSamples;
+			++sample
+		)
+		{
+			samples[sample] =
+				juce::jlimit(
+					-1.0f,
+					1.0f,
+					samples[sample]
+				);
+		}
+	}
+
+
+	// ============================================================
+	// PLAYLIST ADVANCE
+	// ============================================================
+
+	if (
+		transportSource.hasStreamFinished()
+	)
+	{
+		nextTrackRequested.store(
+			true
+		);
+	}
+}
+//--------------------------------------------------------------
+void MainComponent::timerCallback()
+{
+	if (
+		nextTrackRequested.exchange(
+			false
+		)
+	)
+	{
+		playNextTrack();
+	}
 }
 
-
-void MainComponent::loadAudioFile(const juce::File& file)
-{
-    auto* reader = formatManager.createReaderFor(file); // Create the reader for the file
-    
-    if (reader != nullptr)
-    {
-        DBG("Sample Rate: " << reader->sampleRate);  // Print the sample rate of the loaded file
-
-        // Set the transport source with the audio reader
-        transportSource.setSource(new juce::AudioFormatReaderSource(reader, true));
-        
-        //set position to 0 to start from the beginning
-        transportSource.setPosition(0);
-    }
-    else
-    {
-        DBG("Error: Could not load audio file.");
-    }
-}
-//==============================================================================
-
-void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
-{
-    
-    currentBlockSize = samplesPerBlockExpected;  // Store the block size
-       currentSampleRate = sampleRate;
-    
-    // Set up the Multi-Output Device
-        auto* deviceType = deviceManager.getCurrentDeviceTypeObject();
-        juce::StringArray allDevices = deviceType->getDeviceNames();
-
-        // Find Multi-Output Device by name
-        juce::String multiOutputDeviceName = "GIGAPORT eX";
-        if (allDevices.contains(multiOutputDeviceName)) {
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.getAudioDeviceSetup(setup);
-
-            // Configure for Multi-Output Device
-            setup.outputDeviceName = multiOutputDeviceName;
-            setup.sampleRate = sampleRate;
-            setup.bufferSize = samplesPerBlockExpected;
-
-            juce::String error = deviceManager.setAudioDeviceSetup(setup, true);
-            if (error.isEmpty()) {
-                DBG("Successfully set up Multi-Output Device: " + multiOutputDeviceName);
-            } else {
-                DBG("Error setting device: " + error);
-            }
-        } else {
-            DBG("Multi-Output Device not found!");
-        
-    }
-    
-    // Loads the playlist before attempting to play any track
-    loadPlaylist();
-    currentSampleRate = sampleRate; // Store the sample rate
-    // Prepare the transport source and effects
-    transportSource.prepareToPlay(samplesPerBlockExpected, sampleRate);
-    delayEffect.prepare(sampleRate, samplesPerBlockExpected);
-    reverbEffect.prepare(sampleRate, samplesPerBlockExpected);
-    eq.prepare(sampleRate, samplesPerBlockExpected);
-    
-
-    // Check if any tracks have been loaded from the playlist folder
-    if (!trackFiles.isEmpty())
-    {
-        // Load the first track from the playlist
-        juce::File firstTrack = trackFiles.getFirst();
-        auto* reader = formatManager.createReaderFor(firstTrack);
-        currentTrackIndex = 0; // Start from the first track
-        playNextTrack(); // Start playback automatically
-        
-        if (reader != nullptr)
-        {
-            std::unique_ptr<juce::AudioFormatReaderSource> newSource(
-                new juce::AudioFormatReaderSource(reader, true)
-            );
-            transportSource.setSource(newSource.get(), 0, nullptr, reader->sampleRate);
-            readerSource.reset(newSource.release());
-
-            juce::Logger::writeToLog("Loaded track: " + firstTrack.getFullPathName());
-            transportSource.start(); // Start playback
-        }
-        else
-        {
-            juce::Logger::writeToLog("Error: Could not load audio file: " + firstTrack.getFullPathName());
-        }
-    }
-    else
-    {
-        juce::Logger::writeToLog("No tracks found in the playlist folder.");
-    }
-
-
-    
-    
-}
-
-
-
-
-void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
-{
-    
-    // Clears the active region of the buffer to avoid leftover audio data from previous processing
-   
-        bufferToFill.clearActiveBufferRegion();
-
-    // Checks if the audio transport source is currently playing
-        if (transportSource.isPlaying())
-        {
-            // Fills the buffer with the next block of audio from the transport source
-            transportSource.getNextAudioBlock(bufferToFill);
-            
-            // If playback has reached the end of the track, advances
-            if (transportSource.getCurrentPosition() >= transportSource.getLengthInSeconds())
-            {
-                playNextTrack();
-            }
-
-            //Temp buffer to apply additional audio processing
-            juce::AudioBuffer<float> processingBuffer(
-                bufferToFill.buffer->getArrayOfWritePointers(),
-                bufferToFill.buffer->getNumChannels(),
-                bufferToFill.startSample,
-                bufferToFill.numSamples
-            );
-
-            processingBuffer.applyGain(volumeLevel * 2.5);
-
-
-            if (delayEffect.isActive())
-                delayEffect.process(bufferToFill);
-                
-            if (reverbEffect.isActive())
-                reverbEffect.process(processingBuffer);
-                
-            // Applies EQ filter to the buffer
-            eq.process(*bufferToFill.buffer, {});
-
-            //Safety checks to prevent audio clipping:
-                    //  amplitude limited to between -0.95 and 0.95 on all channels
-        for (int ch = 0; ch < bufferToFill.buffer->getNumChannels(); ++ch) {
-            juce::FloatVectorOperations::clip(
-                bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample),
-                bufferToFill.buffer->getReadPointer(ch, bufferToFill.startSample),
-                -0.95f, 0.95f,
-                bufferToFill.numSamples
-            );
-        }
-    }
-}
-
-// MIDI input callback -- handlding the knobs, sliders, buttons inputs
-void MainComponent::handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message)
-{
-    {
-        if (message.isController())
-        {
-            // Extract MIDI controller data
-            auto controllerNumber = message.getControllerNumber();
-            auto controllerValue = message.getControllerValue();
-            
-            // Log the message to the console
-            juce::Logger::writeToLog("MIDI Message Received: Controller Number = "
-                                     + juce::String(controllerNumber)
-                                     + ", Value = "
-                                     + juce::String(controllerValue));
-            
-            if (controllerNumber == 14) //volume control for user headphones
-            {
-                volumeLevel = juce::jmap(static_cast<float>(controllerValue), 0.0f, 127.0f, 0.0f, 1.0f);
-                juce::Logger::writeToLog("Volume set to: " + juce::String(volumeLevel));
-            }
-            
-            
-            if (controllerNumber == 20) { // Room Size
-                float roomSize = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                reverbEffect.setRoomSize(roomSize);
-                oscSender.send("/reverb/roomSize", roomSize);
-            }
-            else if (controllerNumber == 18) { // Wet Level
-                float wetLevel = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                reverbEffect.setWetLevel(wetLevel);
-                oscSender.send("/reverb/wetLevel", wetLevel);
-            }
-            else if (controllerNumber == 12) { // Damping
-                float damping = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                reverbEffect.setDamping(damping);
-                oscSender.send("/reverb/damping", damping);
-            }
-            else if (controllerNumber == 11) { // Width
-                float width = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                reverbEffect.setWidth(width);
-                oscSender.send("/reverb/width", width);
-            }
-            
-            if (controllerNumber == 21) { // Bass
-                float bassGain = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                eq.setBassGain(bassGain);
-                oscSender.send("/eq/bass", bassGain);
-            }
-            else if (controllerNumber == 19) { // Mids
-                float midsGain = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                eq.setMidsGain(midsGain);
-                oscSender.send("/eq/mids", midsGain);
-            }
-            else if (controllerNumber == 17) { // Tops
-                float topsGain = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                eq.setTopsGain(topsGain);
-                oscSender.send("/eq/tops", topsGain);
-            }
-            
-            if (controllerNumber == 8)
-            {
-                
-                float mixValue = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                delayEffect.setMix(mixValue); // Updates the mix level of the delay effect
-                // Creates an OSC message to communicate the updated mix value
-                juce::OSCMessage mixValueMessage("/delay/mixValue", mixValue);
-                oscSender.send(mixValueMessage); // Sends OSC message
-            }
-            else if (controllerNumber == 23)
-            {
-                
-                float feedbackValue = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-                delayEffect.setFeedback(feedbackValue);
-                juce::OSCMessage feedbackValueMessage("/delay/feedbackValue", feedbackValue);
-                oscSender.send(feedbackValueMessage);
-            }
-            else if (controllerNumber == 9)
-            {
-                int delayTime = juce::jmap<int>(controllerValue, 0, 127, 50, 2000);
-                delayEffect.setDelayTime(delayTime);
-                juce::OSCMessage delayTimeMessage("/delay/delayTime", delayTime);
-                oscSender.send(delayTimeMessage);
-            }
-        }
-  
-             if (message.isNoteOnOrOff())
-            {
-                // Log note on/off messages
-                juce::Logger::writeToLog("MIDI Note "
-                                         + juce::String(message.isNoteOn() ? "On" : "Off")
-                                         + ": Note Number = "
-                                         + juce::String(message.getNoteNumber())
-                                         + ", Velocity = "
-                                         + juce::String(message.getVelocity()));
-         
-                
-                // MIDI control for advancing the split screen video
-                 if (message.getNoteNumber() == 64 && message.isNoteOn())
-                {
-                    // Send OSC message to advance the video
-                    juce::OSCMessage videoAdvanceMessage("/video/advance", 1); // Sending a signal to advance video
-                    oscSender.send(videoAdvanceMessage);
-                    juce::Logger::writeToLog("Sending OSC message to advance video");
-                }
-                
-                
-            }
-            
-            
-        }
-        
-        
-    }
-
-// Play/Pause toggle function
-void MainComponent::togglePlayPause()
-{
-
-        transportSource.start();
-        juce::Logger::writeToLog("Playback started: " + trackNames[currentTrackIndex]);
-
-}
-
-// Volume control from MIDI CC
-void MainComponent::handleVolumeControl(int controllerValue)
-{
-    // Maps the controller value to volume (0-1 range)
-    float volume = juce::jmap<float>(controllerValue, 0, 127, 0.0f, 1.0f);
-    audioTransportSource.setGain(volume); // Sets the volume of the audio transport source
-    juce::Logger::writeToLog("Volume set to: " + juce::String(volume));
-}
-
-
-// Start next track
-void MainComponent::nextTrack()
-{
-    if (!trackFiles.isEmpty())
-    {
-        currentTrackIndex = (currentTrackIndex + 1) % trackFiles.size(); // Loops back to the first track if at the end
-        loadAudioFile(trackFiles[currentTrackIndex]);
-        transportSource.start(); // Start playback
-        juce::Logger::writeToLog("Playing next track: " + trackFiles[currentTrackIndex].getFullPathName());
-    }
-}
-
-void MainComponent::playNextTrack()
-{
-    if (trackFiles.isEmpty())
-        return;
-
-    
-    // Stop the current playback and clean up the current audio source
-    transportSource.stop();
-    transportSource.setSource(nullptr);
-    readerSource.reset();
-
-    // Move to the next track in the playlist --- loops back to start of playlist if it ends
-    currentTrackIndex = (currentTrackIndex + 1) % trackFiles.size();
-    juce::File nextTrack = trackFiles[currentTrackIndex];
-
-    // Creates an audio reader for the next track
-    auto* reader = formatManager.createReaderFor(nextTrack);
-    if (reader != nullptr)
-    {
-        // Wrapped the reader in a reader source that can be used with the transport
-        double fileSampleRate = reader->sampleRate;
-        
-        std::unique_ptr<juce::AudioFormatReaderSource> newSource(
-            new juce::AudioFormatReaderSource(reader, true)
-        );
-
-        // Set the transport source to use the new audio source
-        transportSource.setSource(newSource.get(), 0, nullptr, fileSampleRate);
-        readerSource.reset(newSource.release());
-
-        // Use the stored block size here
-        transportSource.prepareToPlay(currentBlockSize, currentSampleRate);
-
-        // Log the track being played and start playback
-        juce::Logger::writeToLog("Now playing: " + nextTrack.getFullPathName());
-        transportSource.setPosition(0.0); // start from beginning
-        transportSource.start();
-    }
-    else
-    {
-        juce::Logger::writeToLog("Error loading next track: " + nextTrack.getFullPathName());
-    }
-}
-
-
-// Shutdown
-void MainComponent::shutdownAudio()
-{
-    audioTransportSource.setSource(nullptr);
-    midiInput->stop();
-}
-
+//--------------------------------------------------------------
 void MainComponent::releaseResources()
 {
-    
+	transportSource.releaseResources();
 }
 
-//==============================================================================
-void MainComponent::paint (juce::Graphics& g)
+//--------------------------------------------------------------
+void MainComponent::paint(
+	juce::Graphics& g
+)
 {
-    
-    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+	g.fillAll(
+		juce::Colours::black
+	);
 
-    
+	g.setColour(
+		juce::Colours::white
+	);
+
+	g.setFont(
+		18.0f
+	);
+
+	juce::String text =
+		"Dread Frequencies";
+
+	if (
+		currentTrackIndex >= 0 &&
+		currentTrackIndex <
+			trackNames.size()
+	)
+	{
+		text +=
+			"\n\n" +
+			trackNames[
+				currentTrackIndex
+			];
+	}
+
+	text +=
+		"\n\nDub Send: " +
+		juce::String(
+			dubSend,
+			2
+		);
+
+	text +=
+		"\nDub Mix: " +
+		juce::String(
+			dubCrossfader,
+			2
+		);
+
+	g.drawFittedText(
+		text,
+		getLocalBounds().reduced(
+			20
+		),
+		juce::Justification::centred,
+		8
+	);
 }
 
+//--------------------------------------------------------------
 void MainComponent::resized()
 {
-
 }
 
+//--------------------------------------------------------------
+juce::File MainComponent::getAssetsFolder() const
+{
+	juce::File current =
+		juce::File::getSpecialLocation(
+			juce::File::currentApplicationFile
+		);
+
+	if (
+		current.existsAsFile()
+	)
+	{
+		current =
+			current.getParentDirectory();
+	}
+
+	for (
+		int i = 0;
+		i < 12;
+		++i
+	)
+	{
+		auto assets =
+			current.getChildFile(
+				"Assets"
+			);
+
+		if (
+			assets.isDirectory()
+		)
+			return assets;
+
+		assets =
+			current.getChildFile(
+				"assets"
+			);
+
+		if (
+			assets.isDirectory()
+		)
+			return assets;
+
+		auto parent =
+			current.getParentDirectory();
+
+		if (
+			parent ==
+			current
+		)
+			break;
+
+		current =
+			parent;
+	}
+
+	auto cwd =
+		juce::File::
+			getCurrentWorkingDirectory();
+
+	auto fallback =
+		cwd.getChildFile(
+			"Assets"
+		);
+
+	if (
+		fallback.isDirectory()
+	)
+		return fallback;
+
+	return cwd.getChildFile(
+		"assets"
+	);
+}
+
+//--------------------------------------------------------------
+void MainComponent::loadPlaylist()
+{
+	playlistFiles.clear();
+	trackNames.clear();
+
+	const auto assetsFolder =
+		getAssetsFolder();
+
+	if (
+		!assetsFolder.isDirectory()
+	)
+		return;
+
+	const auto playlistFile =
+		assetsFolder.getChildFile(
+			"playlist.json"
+		);
+
+	if (
+		!playlistFile.existsAsFile()
+	)
+		return;
+
+	const juce::var json =
+		juce::JSON::parse(
+			playlistFile.loadFileAsString()
+		);
+
+	juce::var tracks =
+		json;
+
+	if (
+		auto* object =
+			json.getDynamicObject()
+	)
+	{
+		tracks =
+			object->getProperty(
+				"tracks"
+			);
+	}
+
+	if (
+		!tracks.isArray()
+	)
+		return;
+
+	for (
+		const auto& track :
+		*tracks.getArray()
+	)
+	{
+		auto* object =
+			track.getDynamicObject();
+
+		if (
+			object ==
+			nullptr
+		)
+			continue;
+
+		juce::String filename =
+			object->getProperty(
+				"file"
+			).toString();
+
+		if (
+			filename.isEmpty()
+		)
+		{
+			filename =
+				object->getProperty(
+					"filename"
+				).toString();
+		}
+
+		if (
+			filename.isEmpty()
+		)
+			continue;
+
+		auto file =
+			assetsFolder.getChildFile(
+				filename
+			);
+
+		if (
+			!file.existsAsFile()
+		)
+		{
+			file =
+				assetsFolder
+					.getChildFile(
+						"audio"
+					)
+					.getChildFile(
+						filename
+					);
+		}
+
+		if (
+			!file.existsAsFile()
+		)
+			continue;
+
+		juce::String title =
+			object->getProperty(
+				"name"
+			).toString();
+
+		if (
+			title.isEmpty()
+		)
+		{
+			title =
+				object->getProperty(
+					"title"
+				).toString();
+		}
+
+		if (
+			title.isEmpty()
+		)
+		{
+			title =
+				file.getFileNameWithoutExtension();
+		}
+
+		playlistFiles.add(
+			file
+		);
+
+		trackNames.add(
+			title
+		);
+	}
+}
+
+//--------------------------------------------------------------
+bool MainComponent::loadTrack(
+	int index
+)
+{
+	if (
+		index < 0 ||
+		index >=
+			playlistFiles.size()
+	)
+		return false;
+
+	auto file =
+		playlistFiles[
+			index
+		];
+
+	std::unique_ptr<
+		juce::AudioFormatReader
+	> reader(
+		formatManager.createReaderFor(
+			file
+		)
+	);
+
+	if (
+		reader == nullptr
+	)
+		return false;
+
+	transportSource.stop();
+
+	transportSource.setSource(
+		nullptr
+	);
+
+	readerSource.reset();
+
+	auto newSource =
+		std::make_unique<
+			juce::AudioFormatReaderSource
+		>(
+			reader.release(),
+			true
+		);
+
+	const double sourceRate =
+		newSource
+			->getAudioFormatReader()
+			->sampleRate;
+
+	transportSource.setSource(
+		newSource.get(),
+		0,
+		nullptr,
+		sourceRate
+	);
+
+	readerSource =
+		std::move(
+			newSource
+		);
+
+	currentTrackIndex =
+		index;
+
+	transportSource.setPosition(
+		0.0
+	);
+
+	transportSource.start();
+
+	repaint();
+
+	return true;
+}
+
+//--------------------------------------------------------------
+void MainComponent::playNextTrack()
+{
+	if (
+		playlistFiles.isEmpty()
+	)
+		return;
+
+	int next =
+		currentTrackIndex + 1;
+
+	if (
+		next >=
+		playlistFiles.size()
+	)
+		next = 0;
+
+	loadTrack(
+		next
+	);
+}
+
+//--------------------------------------------------------------
+void MainComponent::initialiseMidi()
+{
+	auto devices =
+		juce::MidiInput::
+			getAvailableDevices();
+
+	if (
+		devices.isEmpty()
+	)
+		return;
+
+	midiInput =
+		juce::MidiInput::openDevice(
+			devices[0].identifier,
+			this
+		);
+
+	if (
+		midiInput != nullptr
+	)
+	{
+		midiInput->start();
+	}
+}
+
+//--------------------------------------------------------------
+void MainComponent::sendFloatOSC(
+	const juce::String& address,
+	float value
+)
+{
+	juce::OSCMessage message(
+		address
+	);
+
+	message.addFloat32(
+		value
+	);
+
+	oscSender.send(
+		message
+	);
+}
+
+//--------------------------------------------------------------
+void MainComponent::sendIntOSC(
+	const juce::String& address,
+	int value
+)
+{
+	juce::OSCMessage message(
+		address
+	);
+
+	message.addInt32(
+		value
+	);
+
+	oscSender.send(
+		message
+	);
+}
+
+//--------------------------------------------------------------
+void MainComponent::sendInteraction()
+{
+	sendIntOSC(
+		"/interaction",
+		1
+	);
+}
+
+//--------------------------------------------------------------
+//--------------------------------------------------------------
+void MainComponent::handleIncomingMidiMessage(
+	juce::MidiInput* source,
+	const juce::MidiMessage& message
+)
+{
+	juce::ignoreUnused(
+		source
+	);
+
+
+	// ============================================================
+	// CONTINUOUS CONTROLS
+	// ============================================================
+
+	if (
+		message.isController()
+	)
+	{
+		const int cc =
+			message.getControllerNumber();
+
+
+		const int raw =
+			message.getControllerValue();
+
+
+		const float value =
+			juce::jlimit(
+				0.0f,
+				1.0f,
+				raw /
+					127.0f
+			);
+
+
+		// ========================================================
+		// DEBUG LOG
+		// ========================================================
+
+		juce::Logger::writeToLog(
+			"[MIDI CC] "
+			+
+			getMidiControlName(
+				cc
+			)
+			+
+			" | CC "
+			+
+			juce::String(
+				static_cast<int>(
+					cc
+				)
+			)
+			+
+			" | raw "
+			+
+			juce::String(
+				static_cast<int>(
+					raw
+				)
+			)
+			+
+			" | normalised "
+			+
+			juce::String(
+				static_cast<double>(
+					value
+				),
+				3
+			)
+		);
+
+		// ========================================================
+		// HEADPHONE VOLUME
+		// ========================================================
+
+		if (
+			cc ==
+			14
+		)
+		{
+			outputGain =
+				value;
+		}
+
+
+		// ========================================================
+		// REVERB ROOM
+		// ========================================================
+
+		else if (
+			cc ==
+			20
+		)
+		{
+			reverbRoomSize =
+				value;
+
+
+			reverbEffect.setRoomSize(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/reverb/roomSize",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// REVERB WET
+		// ========================================================
+
+		else if (
+			cc ==
+			18
+		)
+		{
+			reverbWet =
+				value;
+
+
+			reverbEffect.setWetLevel(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/reverb/wetLevel",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// REVERB DAMPING
+		// ========================================================
+
+		else if (
+			cc ==
+			12
+		)
+		{
+			reverbDamping =
+				value;
+
+
+			reverbEffect.setDamping(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/reverb/damping",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// REVERB WIDTH
+		// ========================================================
+
+		else if (
+			cc ==
+			11
+		)
+		{
+			reverbWidth =
+				value;
+
+
+			reverbEffect.setWidth(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/reverb/width",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// BASS
+		// ========================================================
+
+		else if (
+			cc ==
+			21
+		)
+		{
+			bassValue =
+				value;
+
+
+			frequencyBands.setBassGain(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/eq/bass",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// MIDS
+		// ========================================================
+
+		else if (
+			cc ==
+			19
+		)
+		{
+			midsValue =
+				value;
+
+
+			frequencyBands.setMidsGain(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/eq/mids",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// TOPS
+		// ========================================================
+
+		else if (
+			cc ==
+			17
+		)
+		{
+			topsValue =
+				value;
+
+
+			frequencyBands.setTopsGain(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/eq/tops",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// MAIN DELAY SEND
+		//
+		// CC8 remains the proper intentional dub send.
+		//
+		// The split-screen slider can contribute additional delay,
+		// but it never reduces a stronger CC8 setting.
+		// ========================================================
+
+		else if (
+			cc ==
+			8
+		)
+		{
+			dubSend =
+				value;
+
+
+			const float effectiveDelaySend =
+				std::max(
+					dubSend,
+					splitScreenDelaySend
+				);
+
+
+			delayEffect.setMix(
+				effectiveDelaySend
+			);
+
+
+			sendFloatOSC(
+				"/delay/mixValue",
+				dubSend
+			);
+
+
+			juce::Logger::writeToLog(
+				"[AUDIO] Effective Delay Send = "
+				+
+									 juce::String(
+										 static_cast<double>(
+											 effectiveDelaySend
+										 ),
+										 3
+									 )
+			);
+		}
+
+
+		// ========================================================
+		// DELAY FEEDBACK
+		// ========================================================
+
+		else if (
+			cc ==
+			23
+		)
+		{
+			delayFeedback =
+				value;
+
+
+			delayEffect.setFeedback(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/delay/feedbackValue",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// DELAY TIME
+		// ========================================================
+
+		else if (
+			cc ==
+			9
+		)
+		{
+			delayTimeMs =
+				juce::jmap(
+					value,
+					90.0f,
+					900.0f
+				);
+
+
+			delayEffect.setDelayTime(
+				static_cast<int>(
+					delayTimeMs
+				)
+			);
+
+
+			sendFloatOSC(
+				"/delay/delayTime",
+				delayTimeMs
+			);
+		}
+
+
+		// ========================================================
+		// DUB CROSSFADER
+		// ========================================================
+
+		else if (
+			cc ==
+			dubCrossfaderCC
+		)
+		{
+			dubCrossfader =
+				value;
+
+
+			sendFloatOSC(
+				"/dub/crossfader",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// SIREN PITCH
+		// ========================================================
+
+		else if (
+			cc ==
+			sirenPitchCC
+		)
+		{
+			dubSiren.setPitch(
+				value
+			);
+
+
+			sendFloatOSC(
+				"/dub/sirenPitch",
+				value
+			);
+		}
+
+
+		// ========================================================
+		// SPLIT SCREEN
+		//
+		// The visual slider now also creates a SUBTLE parallel
+		// delay send.
+		//
+		// At 0:
+		// no contribution.
+		//
+		// At 1:
+		// roughly 38% delay send.
+		//
+		// Existing CC8 dubSend always takes priority if stronger.
+		// ========================================================
+
+		else if (
+			cc ==
+			10
+		)
+		{
+			sendFloatOSC(
+				"/splitScreen/amount",
+				value
+			);
+
+
+			splitScreenDelaySend =
+				pow(
+					value,
+					0.82f
+				)
+				*
+				0.38f;
+
+
+			const float effectiveDelaySend =
+				std::max(
+					dubSend,
+					splitScreenDelaySend
+				);
+
+
+			delayEffect.setMix(
+				effectiveDelaySend
+			);
+
+
+			juce::Logger::writeToLog(
+				"[SPLIT AUDIO] split="
+				+
+				juce::String(
+					static_cast<double>(
+						value
+					),
+					3
+				)
+				+
+				" delayContribution="
+				+
+				juce::String(
+					static_cast<double>(
+						splitScreenDelaySend
+					),
+					3
+				)
+				+
+				" effectiveDelay="
+				+
+				juce::String(
+					static_cast<double>(
+						effectiveDelaySend
+					),
+					3
+				)
+			);
+		}
+
+
+		// ========================================================
+		// JOG
+		// ========================================================
+
+		else if (
+			cc ==
+			25
+		)
+		{
+			sendIntOSC(
+				"/chronology/jog",
+				raw
+			);
+		}
+
+
+		// ========================================================
+		// SECONDARY JOG
+		// ========================================================
+
+		else if (
+			cc ==
+			24
+		)
+		{
+			sendIntOSC(
+				"/chronology/jogSecondary",
+				raw
+			);
+		}
+
+
+		sendInteraction();
+
+
+		return;
+	}
+
+
+	// ============================================================
+	// BUTTONS
+	// ============================================================
+
+	if (
+		message.isNoteOn()
+	)
+	{
+		const int note =
+			message.getNoteNumber();
+
+
+		juce::Logger::writeToLog(
+			"[MIDI NOTE] "
+			+
+			getMidiNoteName(
+				note
+			)
+			+
+			" | note "
+			+
+			juce::String(
+				static_cast<int>(
+					note
+				)
+			)
+			+
+			" | velocity "
+			+
+			juce::String(
+				static_cast<double>(
+					message.getVelocity()
+				),
+				3
+			)
+		);
+
+
+		if (
+			note ==
+			sirenTriggerNote
+		)
+		{
+			dubSiren.trigger();
+
+
+			sendIntOSC(
+				"/dub/siren",
+				1
+			);
+		}
+
+
+		else if (
+			note ==
+			64
+		)
+		{
+			sendIntOSC(
+				"/video/advance",
+				1
+			);
+		}
+
+
+		else if (
+			note ==
+			66
+		)
+		{
+			sendIntOSC(
+				"/splitScreen/advance",
+				1
+			);
+		}
+
+
+		else if (
+			note ==
+				60 ||
+			note ==
+				51
+		)
+		{
+			sendIntOSC(
+				"/chronology/randomTopic",
+				1
+			);
+		}
+
+
+		sendInteraction();
+	}
+}
