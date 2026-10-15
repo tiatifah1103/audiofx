@@ -30,18 +30,91 @@ ReverbEffect::~ReverbEffect()
 }
 
 // Called before playback starts to set up the processor
-void ReverbEffect::prepare(double sampleRate, int samplesPerBlock)
+//--------------------------------------------------------------
+void ReverbEffect::prepare(
+	double sampleRate,
+	int samplesPerBlock
+)
 {
-    // Tells  reverb what sample rate to expect
-    reverb.setSampleRate(sampleRate);
+	juce::ignoreUnused(
+		samplesPerBlock
+	);
+
+
+	const double safeSampleRate =
+		sampleRate >
+			1000.0
+		?
+		sampleRate
+		:
+		44100.0;
+
+
+	reverb.setSampleRate(
+		safeSampleRate
+	);
+
+
+	reverb.reset();
+
+
+	reverb.setParameters(
+		reverbParams
+	);
+}
+
+
+//--------------------------------------------------------------
+void ReverbEffect::process(
+	juce::AudioBuffer<float>& buffer
+)
+{
+	const int numChannels =
+		buffer.getNumChannels();
+
+
+	const int numSamples =
+		buffer.getNumSamples();
+
+
+	if (
+		numChannels <=
+			0 ||
+		numSamples <=
+			0
+	)
+	{
+		return;
+	}
+
+
+	if (
+		numChannels >=
+		2
+	)
+	{
+		reverb.processStereo(
+			buffer.getWritePointer(
+				0
+			),
+			buffer.getWritePointer(
+				1
+			),
+			numSamples
+		);
+	}
+	else
+	{
+		reverb.processMono(
+			buffer.getWritePointer(
+				0
+			),
+			numSamples
+		);
+	}
 }
 
 // Processes audio block with stereo reverb
-void ReverbEffect::process(juce::AudioBuffer<float>& buffer)
-{
-    // Applies reverb to both left and right channels in-place
-    reverb.processStereo(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples());
-}
 
 // Sets the simulated room size (0.0 to 1.0)
 void ReverbEffect::setRoomSize(float size)

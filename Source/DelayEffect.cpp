@@ -12,29 +12,56 @@
 #include <cmath>
 
 //--------------------------------------------------------------
+//--------------------------------------------------------------
 void DelayEffect::prepare(
 	double sampleRate,
 	int samplesPerBlock
 )
 {
-	juce::ignoreUnused(samplesPerBlock);
+	juce::ignoreUnused(
+		samplesPerBlock
+	);
 
-	currentSampleRate = sampleRate;
+
+	currentSampleRate =
+		sampleRate >
+			1000.0
+		?
+		sampleRate
+		:
+		44100.0;
+
 
 	const int maximumDelaySamples =
-		static_cast<int>(
-			currentSampleRate * 2.5
+		std::max(
+			2,
+			static_cast<int>(
+				std::ceil(
+					currentSampleRate *
+					2.5
+				)
+			)
+			+
+			2
 		);
+
 
 	delayBuffer.setSize(
 		2,
 		maximumDelaySamples
 	);
 
+
 	delayBuffer.clear();
 
-	writePosition = 0;
-	wowPhase = 0.0;
+
+	writePosition =
+		0;
+
+
+	wowPhase =
+		0.0;
+
 
 	filterState = {
 		0.0f,
@@ -42,16 +69,69 @@ void DelayEffect::prepare(
 	};
 }
 
+
 //--------------------------------------------------------------
 void DelayEffect::process(
 	const juce::AudioSourceChannelInfo& bufferToFill
 )
 {
-	if (bufferToFill.buffer == nullptr)
+	if (
+		bufferToFill.buffer ==
+		nullptr
+	)
+	{
 		return;
+	}
+
+
+	if (
+		currentSampleRate <=
+		1000.0
+	)
+	{
+		return;
+	}
+
 
 	auto& buffer =
 		*bufferToFill.buffer;
+
+
+	const int totalBufferSamples =
+		buffer.getNumSamples();
+
+
+	const int startSample =
+		bufferToFill.startSample;
+
+
+	if (
+		startSample <
+			0 ||
+		startSample >=
+			totalBufferSamples
+	)
+	{
+		return;
+	}
+
+
+	const int safeNumSamples =
+		std::min(
+			bufferToFill.numSamples,
+			totalBufferSamples -
+				startSample
+		);
+
+
+	if (
+		safeNumSamples <=
+		0
+	)
+	{
+		return;
+	}
+
 
 	const int numChannels =
 		std::min(
@@ -59,17 +139,29 @@ void DelayEffect::process(
 			buffer.getNumChannels()
 		);
 
-	const int numSamples =
-		bufferToFill.numSamples;
-
-	const int delayBufferSize =
-		delayBuffer.getNumSamples();
 
 	if (
-		delayBufferSize <= 0 ||
-		numSamples <= 0
+		numChannels <=
+		0
 	)
+	{
 		return;
+	}
+
+
+	const int delayBufferSize =
+		delayBuffer
+			.getNumSamples();
+
+
+	if (
+		delayBufferSize <
+		2
+	)
+	{
+		return;
+	}
+
 
 	const float currentFeedback =
 		juce::jlimit(
@@ -78,12 +170,14 @@ void DelayEffect::process(
 			feedback.load()
 		);
 
+
 	const float currentMix =
 		juce::jlimit(
 			0.0f,
 			1.0f,
 			mix.load()
 		);
+
 
 	const float baseDelayMs =
 		juce::jlimit(
@@ -92,47 +186,58 @@ void DelayEffect::process(
 			delayTimeMs.load()
 		);
 
-	// Darken every repeat like a tape echo.
+
 	constexpr float tapeCutoff =
 		4500.0f;
+
 
 	const float lowPassAmount =
 		1.0f -
 		std::exp(
 			-2.0f *
-			juce::MathConstants<float>::pi *
+			juce::MathConstants<float>::
+				pi *
 			tapeCutoff /
 			static_cast<float>(
 				currentSampleRate
 			)
 		);
 
-	// Slow tape-speed modulation.
+
 	constexpr double wowRate =
 		0.34;
+
 
 	constexpr float wowDepthMs =
 		6.0f;
 
+
 	for (
 		int sample = 0;
-		sample < numSamples;
+		sample <
+			safeNumSamples;
 		++sample
 	)
 	{
 		const float wow =
-			std::sin(
-				wowPhase
+			static_cast<float>(
+				std::sin(
+					wowPhase
+				)
 			);
+
 
 		const float modulatedDelayMs =
 			baseDelayMs +
-			wow * wowDepthMs;
+			wow *
+				wowDepthMs;
+
 
 		const int delaySamples =
 			juce::jlimit(
 				1,
-				delayBufferSize - 1,
+				delayBufferSize -
+					1,
 				static_cast<int>(
 					currentSampleRate *
 					modulatedDelayMs /
@@ -140,40 +245,48 @@ void DelayEffect::process(
 				)
 			);
 
+
 		int readPosition =
 			writePosition -
 			delaySamples;
 
+
 		while (
-			readPosition < 0
+			readPosition <
+			0
 		)
 		{
 			readPosition +=
 				delayBufferSize;
 		}
 
+
 		for (
 			int channel = 0;
-			channel < numChannels;
+			channel <
+				numChannels;
 			++channel
 		)
 		{
 			float* output =
 				buffer.getWritePointer(
 					channel,
-					bufferToFill.startSample
+					startSample
 				);
+
 
 			const float inputSample =
 				output[sample];
 
-			const float delayedSample =
-				delayBuffer.getSample(
-					channel,
-					readPosition
-				);
 
-			// Tape repeats progressively lose top end.
+			const float delayedSample =
+				delayBuffer
+					.getSample(
+						channel,
+						readPosition
+					);
+
+
 			filterState[channel] +=
 				lowPassAmount *
 				(
@@ -181,56 +294,115 @@ void DelayEffect::process(
 					filterState[channel]
 				);
 
-			const float darkRepeat =
+
+			float darkRepeat =
 				filterState[channel];
 
-			// Soft tape-style saturation in feedback path.
+
+			if (
+				!std::isfinite(
+					darkRepeat
+				)
+			)
+			{
+				darkRepeat =
+					0.0f;
+
+				filterState[channel] =
+					0.0f;
+			}
+
+
 			const float saturatedFeedback =
 				std::tanh(
-					darkRepeat * 1.6f
+					darkRepeat *
+					1.6f
 				);
 
-			output[sample] =
+
+			float outputSample =
 				inputSample *
-					(1.0f - currentMix)
+					(
+						1.0f -
+						currentMix
+					)
 				+
 				darkRepeat *
 					currentMix;
 
+
+			if (
+				!std::isfinite(
+					outputSample
+				)
+			)
+			{
+				outputSample =
+					0.0f;
+			}
+
+
+			output[sample] =
+				outputSample;
+
+
+			float feedbackSample =
+				inputSample +
+				saturatedFeedback *
+					currentFeedback;
+
+
+			if (
+				!std::isfinite(
+					feedbackSample
+				)
+			)
+			{
+				feedbackSample =
+					0.0f;
+			}
+
+
 			delayBuffer.setSample(
 				channel,
 				writePosition,
-				inputSample +
-				saturatedFeedback *
-					currentFeedback
+				feedbackSample
 			);
 		}
 
+
 		++writePosition;
+
 
 		if (
 			writePosition >=
 			delayBufferSize
 		)
 		{
-			writePosition = 0;
+			writePosition =
+				0;
 		}
+
 
 		wowPhase +=
 			(
-				juce::MathConstants<double>::twoPi *
+				juce::MathConstants<double>::
+					twoPi *
 				wowRate
 			)
 			/
 			currentSampleRate;
 
-		if (
+
+		while (
 			wowPhase >=
-			juce::MathConstants<double>::twoPi
+			juce::MathConstants<double>::
+				twoPi
 		)
 		{
 			wowPhase -=
-				juce::MathConstants<double>::twoPi;
+				juce::MathConstants<double>::
+					twoPi;
 		}
 	}
 }

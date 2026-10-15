@@ -1,25 +1,75 @@
 #pragma once
+
 #include <JuceHeader.h>
 
-class FrequencyBands {
+
+class FrequencyBands
+{
 public:
-    FrequencyBands();
-    ~FrequencyBands() = default;
 
-    void prepare(double sampleRate, int samplesPerBlock);
-    void process(juce::AudioBuffer<float>& buffer, const juce::MidiBuffer&);
+	FrequencyBands();
 
-    void setBassGain(float gain) { bassGain = gain; }
-    void setMidsGain(float gain) { midsGain = gain; }
-    void setTopsGain(float gain) { topsGain = gain; }
+
+	void prepare(
+		double sampleRate,
+		int samplesPerBlock
+	);
+
+
+	void process(
+		juce::AudioBuffer<float>& buffer,
+		const juce::MidiBuffer& midi
+	);
+
+
+	void setBassGain(
+		float gain
+	);
+
+
+	void setMidsGain(
+		float gain
+	);
+
+
+	void setTopsGain(
+		float gain
+	);
+
 
 private:
-    // Filters
-    juce::IIRFilter bassLowPass, midsBandPass, topsHighPass;
 
-    // Gains
-    float bassGain = 1.0f, midsGain = 1.0f, topsGain = 1.0f;
+	double currentSampleRate =
+		44100.0;
 
-    // Sample rate
-    double currentSampleRate = 44100.0;
+
+	juce::IIRFilter bassLowPass;
+
+	juce::IIRFilter midsBandPass;
+
+	juce::IIRFilter topsHighPass;
+
+
+	float bassGain =
+		1.0f;
+
+	float midsGain =
+		1.0f;
+
+	float topsGain =
+		1.0f;
+
+
+	juce::AudioBuffer<float>
+		bassBuffer;
+
+	juce::AudioBuffer<float>
+		midsBuffer;
+
+	juce::AudioBuffer<float>
+		topsBuffer;
+
+
+	int scratchCapacitySamples =
+		0;
 };
