@@ -14,18 +14,19 @@ class MainComponent
 	  private juce::MidiInputCallback,
 	  private juce::Timer
 {
-public:
-	MainComponent();
-	~MainComponent() override;
 
-	void prepareToPlay(
-		int samplesPerBlockExpected,
-		double sampleRate
-	) override;
+	public:
+	 MainComponent();
+	 ~MainComponent() override;
 
-	void getNextAudioBlock(
-		const juce::AudioSourceChannelInfo& bufferToFill
-	) override;
+	 void prepareToPlay(
+		 int samplesPerBlockExpected,
+		 double sampleRate
+	 ) override;
+
+	 void getNextAudioBlock(
+		 const juce::AudioSourceChannelInfo& bufferToFill
+	 ) override;
 
 	void releaseResources() override;
 
@@ -79,7 +80,7 @@ private:
 	//
 	// Leave empty "" if you deliberately want the system default.
 	juce::String preferredAudioDeviceName {
-		"External Headphones"
+		"Scarlett 4i4 USB"
 	};
 
 

@@ -11,6 +11,43 @@ namespace
 	constexpr int sirenTriggerNote =
 		79;
 
+void distributeExhibitionAudio(
+	juce::AudioBuffer<float>& buffer,
+	int numSamples
+)
+{
+	// If the device only provides two channels,
+	// retain the existing stereo output.
+	if (buffer.getNumChannels() < 4)
+		return;
+
+	float* output1 = buffer.getWritePointer(0);
+	float* output2 = buffer.getWritePointer(1);
+	float* output3 = buffer.getWritePointer(2);
+	float* output4 = buffer.getWritePointer(3);
+
+	for (int sample = 0; sample < numSamples; ++sample)
+	{
+		// Read the processed stereo signal before
+		// overwriting either source channel.
+		const float left = output1[sample];
+		const float right = output2[sample];
+
+		// Combine left and right, avoiding
+		// a gain increase from simple addition.
+		const float mono = 0.5f * (left + right);
+
+		// Three identical headphone feeds.
+		output1[sample] = mono;
+		output2[sample] = mono;
+		output3[sample] = mono;
+
+		// Quieter initial subwoofer feed.
+		// This is NOT a low-pass filter.
+		output4[sample] = mono * 0.25f;
+	}
+}
+
 
 juce::String getMidiControlName(
 	int cc
@@ -180,7 +217,7 @@ MainComponent::MainComponent()
 
 	setAudioChannels(
 		0,
-		2
+		4
 	);
 
 
@@ -595,9 +632,19 @@ void MainComponent::getNextAudioBlock(
 
 	juce::MidiBuffer emptyMidi;
 
+	float* stereoChannels[] = {
+		activeOutput.getWritePointer(0),
+		activeOutput.getWritePointer(1)
+	};
+
+	juce::AudioBuffer<float> stereoOutput(
+		stereoChannels,
+		2,
+		numSamples
+	);
 
 	frequencyBands.process(
-		activeOutput,
+		stereoOutput,
 		emptyMidi
 	);
 
@@ -1015,6 +1062,14 @@ void MainComponent::getNextAudioBlock(
 		}
 	}
 
+	// ============================================================
+	// FOUR-CHANNEL EXHIBITION DISTRIBUTION
+	// ============================================================
+
+	distributeExhibitionAudio(
+		activeOutput,
+		numSamples
+	);
 
 	// ============================================================
 	// PLAYLIST ADVANCE
@@ -3165,23 +3220,7 @@ bool MainComponent::configurePreferredAudioOutput()
 	// Don't unnecessarily restart the audio engine.
 	// ============================================================
 
-	if (
-		auto* current =
-			deviceManager
-				.getCurrentAudioDevice()
-	)
-	{
-		if (
-			current
-				->getName()
-				.equalsIgnoreCase(
-					chosenDevice
-				)
-		)
-		{
-			return true;
-		}
-	}
+	
 
 
 	// ============================================================
@@ -3227,21 +3266,25 @@ bool MainComponent::configurePreferredAudioOutput()
 	// change the two integers in MainComponent.h.
 	// ============================================================
 
-	setup.useDefaultOutputChannels =
-		false;
+	// ============================================================
+	// EXHIBITION OUTPUT CONFIGURATION
+	//
+	// Enable four physical output channels:
+	//
+	// 0 = Scarlett Line Output 1
+	// 1 = Scarlett Line Output 2
+	// 2 = Scarlett Line Output 3
+	// 3 = Scarlett Line Output 4
+	// ============================================================
 
+	setup.useDefaultOutputChannels = false;
 
 	setup.outputChannels.clear();
 
-
-	setup.outputChannels.setBit(
-		preferredOutputLeftChannel
-	);
-
-
-	setup.outputChannels.setBit(
-		preferredOutputRightChannel
-	);
+	setup.outputChannels.setBit(0);
+	setup.outputChannels.setBit(1);
+	setup.outputChannels.setBit(2);
+	setup.outputChannels.setBit(3);
 
 
 	// ============================================================
